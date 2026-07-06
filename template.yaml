@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  claude-code-finops: FinOps telemetry pipeline and dashboard for Claude Code
+  usage on Amazon Bedrock. OTLP ingest -> DynamoDB rollups + S3 raw archive,
+  dashboard API, and scheduled spend alerts.
+
+Parameters:
+  IngestToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: >
+      Bearer token clients send in OTEL_EXPORTER_OTLP_HEADERS. Generate with:
+      openssl rand -hex 24
+  DashboardToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Bearer token the dashboard uses to read the API. Use a different value than IngestToken.
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 0
+    Description: Alert when month-to-date spend crosses this amount. 0 disables.
+  BudgetsJson:
+    Type: String
+    Default: ''
+    Description: 'Optional per-team monthly budgets as JSON, e.g. {"platform": 500, "data": 250}'
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional email address subscribed to spend alerts.
+  RawRetentionDays:
+    Type: Number
+    Default: 90
+    Description: Days to keep raw OTLP payloads in S3 before expiry.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 30
+    Architectures: [arm64]
+
+Resources:
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Description: claude-code-finops ingest + dashboard
+
+  RollupTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireRaw
+            Status: Enabled
+            ExpirationInDays: !Ref RawRetentionDays
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: firehose.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteToRawBucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !GetAtt RawBucket.Arn
+                  - !Sub '${RawBucket.Arn}/*'
+
+  RawFirehose:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt RawBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        Prefix: 'raw/dt=!{timestamp:yyyy-MM-dd}/'
+        ErrorOutputPrefix: 'errors/dt=!{timestamp:yyyy-MM-dd}/'
+        CompressionFormat: GZIP
+        BufferingHints:
+          IntervalInSeconds: 300
+          SizeInMBs: 64
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: claude-code-finops alerts
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: ingest/app.handler
+      Description: OTLP http/json ingest for Claude Code telemetry
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref RollupTable
+          FIREHOSE_NAME: !Ref RawFirehose
+          INGEST_TOKEN: !Ref IngestToken
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RollupTable
+        - FirehoseWritePolicy:
+            DeliveryStreamName: !Ref RawFirehose
+      Events:
+        Metrics:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /v1/metrics
+            Method: POST
+        Logs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /v1/logs
+            Method: POST
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: api/app.handler
+      Description: Dashboard API and static assets
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref RollupTable
+          DASHBOARD_TOKEN: !Ref DashboardToken
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RollupTable
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /
+            Method: GET
+        Everything:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /{proxy+}
+            Method: GET
+
+  AlertsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: alerts/app.handler
+      Description: Hourly budget and spend-spike checks
+      Timeout: 120
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref RollupTable
+          TOPIC_ARN: !Ref AlertTopic
+          MONTHLY_BUDGET_USD: !Ref MonthlyBudgetUsd
+          BUDGETS_JSON: !Ref BudgetsJson
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RollupTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AlertTopic.TopicName
+      Events:
+        Hourly:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+
+  # --- Athena over the raw archive (ad-hoc analysis beyond the dashboard) ---
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: claude_code_finops
+
+  RawEventsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: raw_events
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+          compressionType: gzip
+        PartitionKeys:
+          - {Name: dt, Type: string}
+        StorageDescriptor:
+          Location: !Sub 's3://${RawBucket}/raw/'
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - {Name: received_at, Type: bigint}
+            - {Name: signal, Type: string}
+            - {Name: payload, Type: string}
+
+Outputs:
+  IngestEndpoint:
+    Description: Set as OTEL_EXPORTER_OTLP_ENDPOINT in Claude Code clients
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com'
+  DashboardUrl:
+    Description: Open in a browser (paste the dashboard token when prompted)
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/'
+  RawArchiveBucket:
+    Description: Raw OTLP payload archive queried by Athena
+    Value: !Ref RawBucket
+  AlertTopicArn:
+    Description: SNS topic for budget and spike alerts
+    Value: !Ref AlertTopic
