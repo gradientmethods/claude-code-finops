@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code FinOps</title>
+<style>
+  .viz-root {
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --ink-1: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --good: #006300;
+    --series-1: #2a78d6;
+    --series-2: #1baf7a;
+    --series-3: #eda100;
+    --series-4: #008300;
+    --series-5: #4a3aa7;
+    --series-6: #e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    .viz-root {
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --ink-1: #ffffff;
+      --ink-2: #c3c2b7;
+      --ink-3: #898781;
+      --grid: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --good: #0ca30c;
+      --series-1: #3987e5;
+      --series-2: #199e70;
+      --series-3: #c98500;
+      --series-4: #008300;
+      --series-5: #9085e9;
+      --series-6: #e66767;
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body.viz-root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page); color: var(--ink-1);
+    padding: 24px; min-height: 100vh;
+  }
+  .wrap { max-width: 1160px; margin: 0 auto; }
+  header.top { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 1.25rem; font-weight: 650; }
+  h1 span { color: var(--ink-3); font-weight: 400; }
+  .filters { display: flex; gap: 4px; }
+  .filters button {
+    font: inherit; font-size: 0.83rem; color: var(--ink-2);
+    background: none; border: 1px solid transparent; border-radius: 8px;
+    padding: 5px 12px; cursor: pointer;
+  }
+  .filters button:hover { background: var(--surface-1); }
+  .filters button[aria-pressed="true"] { color: var(--ink-1); font-weight: 650; background: var(--surface-1); border-color: var(--border); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .tile .label { font-size: 0.82rem; color: var(--ink-2); margin-bottom: 6px; }
+  .tile .value { font-size: 1.9rem; font-weight: 600; letter-spacing: -0.01em; }
+  .tile.hero .value { font-size: 3rem; }
+  .tile .sub { font-size: 0.78rem; color: var(--ink-3); margin-top: 4px; }
+  .tile .sub.good { color: var(--good); }
+  .charts { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 880px) { .charts { grid-template-columns: 1fr; } }
+  .card h2 { font-size: 0.95rem; font-weight: 650; margin-bottom: 2px; }
+  .card .desc { font-size: 0.8rem; color: var(--ink-3); margin-bottom: 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--ink-2); }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .chart-box { position: relative; }
+  svg text { font-family: inherit; }
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12); padding: 10px 12px; font-size: 0.78rem;
+    min-width: 150px;
+  }
+  .tooltip .t-title { font-weight: 650; margin-bottom: 6px; }
+  .tooltip .t-row { display: flex; justify-content: space-between; gap: 16px; color: var(--ink-2); margin-top: 3px; }
+  .tooltip .t-row b { color: var(--ink-1); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tooltip .t-key { display: inline-flex; align-items: center; gap: 6px; }
+  .tooltip .t-key i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+  th { text-align: right; color: var(--ink-3); font-weight: 500; font-size: 0.75rem; padding: 8px 10px; border-bottom: 1px solid var(--grid); }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  td:first-child { color: var(--ink-1); font-variant-numeric: normal; }
+  tr:last-child td { border-bottom: none; }
+  .table-scroll { overflow-x: auto; }
+  .empty { color: var(--ink-3); font-size: 0.85rem; padding: 32px 0; text-align: center; }
+  .empty code { background: var(--page); padding: 2px 6px; border-radius: 6px; font-size: 0.8rem; }
+  /* token gate */
+  #gate { max-width: 420px; margin: 12vh auto; text-align: center; }
+  #gate p { color: var(--ink-2); font-size: 0.9rem; margin: 10px 0 18px; }
+  #gate input {
+    font: inherit; width: 100%; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--page); color: var(--ink-1); margin-bottom: 10px;
+  }
+  #gate button {
+    font: inherit; font-weight: 600; width: 100%; padding: 10px; border-radius: 10px;
+    border: none; background: var(--series-1); color: #fff; cursor: pointer;
+  }
+  #gate .err { color: var(--series-6); font-size: 0.8rem; margin-top: 8px; display: none; }
+  footer { color: var(--ink-3); font-size: 0.75rem; margin-top: 20px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body class="viz-root">
+
+<div id="gate" class="card" style="display:none;">
+  <h1>Claude Code FinOps</h1>
+  <p>Enter the dashboard token configured at deploy time. It is stored only in this browser.</p>
+  <input id="tokenInput" type="password" placeholder="Dashboard token" autocomplete="off">
+  <button id="tokenSave">Open dashboard</button>
+  <div class="err" id="gateErr">That token was rejected. Check the DashboardToken stack parameter.</div>
+</div>
+
+<div class="wrap" id="app" style="display:none;">
+  <header class="top">
+    <h1>Claude Code FinOps <span>&middot; Bedrock spend</span></h1>
+    <nav class="filters" aria-label="Date range">
+      <button data-days="7" aria-pressed="false">7 days</button>
+      <button data-days="30" aria-pressed="true">30 days</button>
+      <button data-days="90" aria-pressed="false">90 days</button>
+    </nav>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="charts">
+    <div class="card">
+      <h2>Daily spend by model</h2>
+      <div class="desc" id="dailyDesc"></div>
+      <div class="chart-box" id="dailyChart"></div>
+      <div class="legend" id="dailyLegend"></div>
+    </div>
+    <div class="card">
+      <h2>Top users by spend</h2>
+      <div class="desc" id="usersDesc"></div>
+      <div class="chart-box" id="usersChart"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Per-user detail</h2>
+    <div class="desc">Tokens, cost, and engineering output over the selected period.</div>
+    <div class="table-scroll"><table id="userTable"></table></div>
+  </section>
+
+  <footer>
+    <span id="genAt"></span>
+    <span><a href="https://github.com/gradientmethods/claude-code-finops" target="_blank" rel="noopener">claude-code-finops</a></span>
+  </footer>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var SERIES = ['--series-1','--series-2','--series-3','--series-4','--series-5','--series-6'];
+  var state = { days: 30, summary: null, users: null };
+
+  function cssVar(name) {
+    return getComputedStyle(document.body).getPropertyValue(name).trim();
+  }
+  function token() { return localStorage.getItem('ccf_token') || ''; }
+
+  function fmtUsd(v, compact) {
+    if (v >= 1000 && compact) return '$' + (v / 1000).toFixed(1) + 'K';
+    return '$' + v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+  function fmtTok(v) {
+    if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+    return String(Math.round(v));
+  }
+  function cost(r) { return (r.cost_usd || r.est_cost_usd || 0); }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  // ---- data ----
+  function api(path) {
+    return fetch(path, {headers: {Authorization: 'Bearer ' + token()}})
+      .then(function (r) {
+        if (r.status === 401) throw new Error('unauthorized');
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      });
+  }
+
+  function load() {
+    Promise.all([
+      api('/api/summary?days=' + state.days),
+      api('/api/users?days=' + state.days)
+    ]).then(function (res) {
+      state.summary = res[0];
+      state.users = res[1];
+      document.getElementById('gate').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      render();
+    }).catch(function (e) {
+      if (e.message === 'unauthorized') showGate(token() !== '');
+      else console.error(e);
+    });
+  }
+
+  function showGate(withError) {
+    document.getElementById('app').style.display = 'none';
+    var gate = document.getElementById('gate');
+    gate.style.display = 'block';
+    document.getElementById('gateErr').style.display = withError ? 'block' : 'none';
+  }
+
+  document.getElementById('tokenSave').addEventListener('click', function () {
+    localStorage.setItem('ccf_token', document.getElementById('tokenInput').value.trim());
+    load();
+  });
+  document.getElementById('tokenInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') document.getElementById('tokenSave').click();
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.filters button'), function (btn) {
+    btn.addEventListener('click', function () {
+      state.days = parseInt(btn.dataset.days, 10);
+      document.querySelectorAll('.filters button').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b === btn));
+      });
+      load();
+    });
+  });
+
+  // ---- tooltip ----
+  var tip = document.getElementById('tooltip');
+  function showTip(html, evt) {
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    var x = evt.clientX + 14, y = evt.clientY + 14;
+    var r = tip.getBoundingClientRect();
+    if (x + r.width > window.innerWidth - 8) x = evt.clientX - r.width - 14;
+    if (y + r.height > window.innerHeight - 8) y = evt.clientY - r.height - 14;
+    tip.style.left = (x + window.scrollX) + 'px';
+    tip.style.top = (y + window.scrollY) + 'px';
+  }
+  function hideTip() { tip.style.display = 'none'; }
+
+  // ---- rendering ----
+  function render() {
+    var s = state.summary;
+    renderTiles(s);
+    renderDaily(s);
+    renderTopUsers(s);
+    renderTable(state.users);
+    document.getElementById('genAt').textContent =
+      'Updated ' + new Date(s.generated_at).toLocaleString();
+  }
+
+  function renderTiles(s) {
+    var t = s.totals;
+    var totalCost = t.cost_usd || t.est_cost_usd || 0;
+    var today = s.series.length ? s.series[s.series.length - 1] : null;
+    var todayCost = today ? (today.cost_usd || today.est_cost_usd || 0) : 0;
+    var cacheTok = t.cache_read_tokens || 0;
+    var inputTok = t.in_tokens || 0;
+    var hitRate = (cacheTok + inputTok) > 0 ? cacheTok / (cacheTok + inputTok) : 0;
+    var tiles = [
+      {label: 'Total spend (' + s.days + ' days)', value: fmtUsd(totalCost), hero: true,
+       sub: fmtTok(t.in_tokens + t.out_tokens + t.cache_read_tokens + t.cache_write_tokens) + ' tokens'},
+      {label: 'Spend today', value: fmtUsd(todayCost),
+       sub: today ? today.date : ''},
+      {label: 'Cache savings', value: fmtUsd(t.cache_savings_usd || 0),
+       sub: Math.round(hitRate * 100) + '% of input tokens from cache', good: true},
+      {label: 'Active users', value: String(s.active_users),
+       sub: fmtTok(t.sessions || 0) + ' sessions'}
+    ];
+    document.getElementById('tiles').innerHTML = tiles.map(function (tl) {
+      return '<div class="card tile' + (tl.hero ? ' hero' : '') + '">' +
+        '<div class="label">' + esc(tl.label) + '</div>' +
+        '<div class="value">' + esc(tl.value) + '</div>' +
+        '<div class="sub' + (tl.good ? ' good' : '') + '">' + esc(tl.sub) + '</div></div>';
+    }).join('');
+  }
+
+  function modelOrder(s) {
+    // fixed slot assignment by total spend, never re-cycled per render
+    var models = Object.keys(s.by_model);
+    models.sort(function (a, b) { return cost(s.by_model[b]) - cost(s.by_model[a]); });
+    if (models.length > SERIES.length) {
+      var kept = models.slice(0, SERIES.length - 1);
+      kept.push('other');
+      return kept;
+    }
+    return models;
+  }
+
+  function renderDaily(s) {
+    var box = document.getElementById('dailyChart');
+    var legend = document.getElementById('dailyLegend');
+    var models = modelOrder(s);
+    var hasData = s.series.some(function (d) { return (d.cost_usd || d.est_cost_usd) > 0; });
+    document.getElementById('dailyDesc').textContent =
+      'USD per day, stacked by model, last ' + s.days + ' days';
+    if (!hasData) {
+      box.innerHTML = '<div class="empty">No telemetry yet. Point Claude Code at the ingest ' +
+        'endpoint (<code>OTEL_EXPORTER_OTLP_ENDPOINT</code>) and data appears within a minute.</div>';
+      legend.innerHTML = '';
+      return;
+    }
+
+    var W = 640, H = 240, padL = 44, padR = 8, padT = 8, padB = 22;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var days = s.series;
+    var maxTotal = 0;
+    days.forEach(function (d) {
+      var sum = 0;
+      models.forEach(function (m) { sum += stackValue(d, m, s); });
+      maxTotal = Math.max(maxTotal, sum);
+    });
+    var yMax = niceCeil(maxTotal || 1);
+    var slot = plotW / days.length;
+    var barW = Math.min(24, Math.max(3, slot * 0.66));
+    var GAP = 2;
+
+    var svg = ['<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Daily spend stacked by model">'];
+    // gridlines + y ticks
+    for (var g = 0; g <= 4; g++) {
+      var yv = yMax * g / 4;
+      var y = padT + plotH - (yv / yMax) * plotH;
+      svg.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y + '" y2="' + y +
+        '" stroke="' + cssVar(g === 0 ? '--baseline' : '--grid') + '" stroke-width="1"/>');
+      svg.push('<text x="' + (padL - 6) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="' +
+        cssVar('--ink-3') + '">$' + tickLabel(yv) + '</text>');
+    }
+    // columns
+    days.forEach(function (d, i) {
+      var x = padL + slot * i + (slot - barW) / 2;
+      var yCursor = padT + plotH;
+      var segs = [];
+      models.forEach(function (m, mi) {
+        var v = stackValue(d, m, s);
+        if (v <= 0) return;
+        var h = (v / yMax) * plotH;
+        segs.push({m: m, mi: mi, v: v, h: h});
+      });
+      segs.forEach(function (seg, si) {
+        var isTop = si === segs.length - 1;
+        var gap = si > 0 ? GAP : 0;
+        var y = yCursor - seg.h;
+        var h = Math.max(0.5, seg.h - gap);
+        var color = 'var(' + SERIES[seg.mi] + ')';
+        if (isTop && h > 4) {
+          svg.push('<path d="' + roundedTopRect(x, y, barW, h, 4) + '" fill="' + color + '"/>');
+        } else {
+          svg.push('<rect x="' + x + '" y="' + y + '" width="' + barW + '" height="' + h + '" fill="' + color + '"/>');
+        }
+        yCursor -= seg.h;
+      });
+      // x labels: first, last, and ~every 7th
+      if (i === 0 || i === days.length - 1 || (days.length > 10 && i % 7 === 0 && i < days.length - 3)) {
+        svg.push('<text x="' + (padL + slot * i + slot / 2) + '" y="' + (H - 6) +
+          '" text-anchor="middle" font-size="10" fill="' + cssVar('--ink-3') + '">' +
+          d.date.slice(5) + '</text>');
+      }
+      // hover hit target (full slot height)
+      svg.push('<rect class="hit" data-i="' + i + '" x="' + (padL + slot * i) + '" y="' + padT +
+        '" width="' + slot + '" height="' + plotH + '" fill="transparent"/>');
+    });
+    svg.push('</svg>');
+    box.innerHTML = svg.join('');
+
+    legend.innerHTML = models.map(function (m, mi) {
+      return '<span><i style="background:var(' + SERIES[mi] + ')"></i>' + esc(m) + '</span>';
+    }).join('');
+
+    box.querySelectorAll('.hit').forEach(function (el) {
+      el.addEventListener('mousemove', function (evt) {
+        var d = days[parseInt(el.dataset.i, 10)];
+        var rows = models.map(function (m, mi) {
+          var v = stackValue(d, m, s);
+          if (v <= 0) return '';
+          return '<div class="t-row"><span class="t-key"><i style="background:var(' +
+            SERIES[mi] + ')"></i>' + esc(m) + '</span><b>' + fmtUsd(v) + '</b></div>';
+        }).join('');
+        var total = d.cost_usd || d.est_cost_usd || 0;
+        showTip('<div class="t-title">' + esc(d.date) + '</div>' + rows +
+          '<div class="t-row" style="margin-top:6px"><span>Total</span><b>' + fmtUsd(total) + '</b></div>', evt);
+      });
+      el.addEventListener('mouseleave', hideTip);
+    });
+  }
+
+  function stackValue(day, model, s) {
+    if (model === 'other') {
+      var named = modelOrder(s).filter(function (m) { return m !== 'other'; });
+      var total = 0;
+      Object.keys(day.by_model).forEach(function (m) {
+        if (named.indexOf(m) === -1) total += day.by_model[m];
+      });
+      return total;
+    }
+    return day.by_model[model] || 0;
+  }
+
+  function renderTopUsers(s) {
+    var box = document.getElementById('usersChart');
+    var users = s.top_users.slice(0, 8);
+    document.getElementById('usersDesc').textContent =
+      'Highest spend over the period, single measure';
+    if (!users.length) {
+      box.innerHTML = '<div class="empty">No user activity in this period.</div>';
+      return;
+    }
+    var W = 420, rowH = 30, padT = 4, labelH = 13;
+    var H = padT + users.length * rowH + 4;
+    var max = cost(users[0]) || 1;
+    var svg = ['<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Top users by spend">'];
+    users.forEach(function (u, i) {
+      var y = padT + i * rowH;
+      var w = Math.max(2, (cost(u) / max) * (W - 90));
+      svg.push('<text x="0" y="' + (y + labelH - 2) + '" font-size="11" fill="' + cssVar('--ink-2') + '">' +
+        esc(shortUser(u.user)) + '</text>');
+      svg.push('<path class="ubar" data-i="' + i + '" d="' + roundedRightRect(0, y + labelH + 2, w, 10, 4) +
+        '" fill="var(--series-1)"/>');
+      svg.push('<text x="' + (w + 6) + '" y="' + (y + labelH + 11) + '" font-size="11" fill="' +
+        cssVar('--ink-1') + '" font-weight="600">' + fmtUsd(cost(u), true) + '</text>');
+    });
+    svg.push('</svg>');
+    box.innerHTML = svg.join('');
+    box.querySelectorAll('.ubar').forEach(function (el) {
+      el.addEventListener('mousemove', function (evt) {
+        var u = users[parseInt(el.dataset.i, 10)];
+        showTip('<div class="t-title">' + esc(u.user) + '</div>' +
+          '<div class="t-row"><span>Spend</span><b>' + fmtUsd(cost(u)) + '</b></div>' +
+          '<div class="t-row"><span>Output tokens</span><b>' + fmtTok(u.out_tokens) + '</b></div>' +
+          '<div class="t-row"><span>Cache savings</span><b>' + fmtUsd(u.cache_savings_usd || 0) + '</b></div>', evt);
+      });
+      el.addEventListener('mouseleave', hideTip);
+    });
+  }
+
+  function renderTable(data) {
+    var rows = data.users;
+    var head = '<tr><th>User</th><th>Spend</th><th>Input</th><th>Output</th>' +
+      '<th>Cache read</th><th>Savings</th><th>Sessions</th><th>Lines +/-</th>' +
+      '<th>Commits</th><th>PRs</th><th>Last active</th></tr>';
+    if (!rows.length) {
+      document.getElementById('userTable').innerHTML =
+        head + '<tr><td colspan="11" class="empty">No users yet.</td></tr>';
+      return;
+    }
+    document.getElementById('userTable').innerHTML = head + rows.map(function (r) {
+      return '<tr><td>' + esc(r.user) + '</td>' +
+        '<td>' + fmtUsd(cost(r)) + '</td>' +
+        '<td>' + fmtTok(r.in_tokens) + '</td>' +
+        '<td>' + fmtTok(r.out_tokens) + '</td>' +
+        '<td>' + fmtTok(r.cache_read_tokens) + '</td>' +
+        '<td>' + fmtUsd(r.cache_savings_usd || 0) + '</td>' +
+        '<td>' + Math.round(r.sessions || 0) + '</td>' +
+        '<td>+' + fmtTok(r.loc_added || 0) + ' / -' + fmtTok(r.loc_removed || 0) + '</td>' +
+        '<td>' + Math.round(r.commits || 0) + '</td>' +
+        '<td>' + Math.round(r.prs || 0) + '</td>' +
+        '<td>' + esc(r.last_active || '') + '</td></tr>';
+    }).join('');
+  }
+
+  // ---- geometry helpers ----
+  function roundedTopRect(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h);
+    return 'M' + x + ',' + (y + h) + ' L' + x + ',' + (y + r) +
+      ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+      ' L' + (x + w - r) + ',' + y +
+      ' Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) +
+      ' L' + (x + w) + ',' + (y + h) + ' Z';
+  }
+  function roundedRightRect(x, y, w, h, r) {
+    r = Math.min(r, h / 2, w);
+    return 'M' + x + ',' + y + ' L' + (x + w - r) + ',' + y +
+      ' Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) +
+      ' L' + (x + w) + ',' + (y + h - r) +
+      ' Q' + (x + w) + ',' + (y + h) + ' ' + (x + w - r) + ',' + (y + h) +
+      ' L' + x + ',' + (y + h) + ' Z';
+  }
+  function niceCeil(v) {
+    var mag = Math.pow(10, Math.floor(Math.log10(v)));
+    var norm = v / mag;
+    var nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+    return nice * mag;
+  }
+  function tickLabel(v) {
+    if (v >= 1000) return (v / 1000) + 'K';
+    return v % 1 === 0 ? String(v) : v.toFixed(2);
+  }
+  function shortUser(u) {
+    return u.length > 22 ? u.slice(0, 20) + '…' : u;
+  }
+
+  // ---- boot ----
+  if (!token()) showGate(false);
+  else load();
+})();
+</script>
+</body>
+</html>
